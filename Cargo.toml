@@ -1,0 +1,12 @@
+[package]
+name = "rustkv"
+version = "0.1.0"
+edition = "2021"
+description = "A persistent Bitcask log-structured key-value storage engine with CRC32 checksums and compaction"
+
+[dependencies]
+crc32fast = "1.4"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.10"
