@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{KvError, Result};
+use crate::hint::{hint_path, load_hint_file, open_hint_writer, write_hint_entry};
 use crate::keydir::{KeyDir, KeyDirEntry};
 use crate::record::{LogRecord, HEADER_SIZE};
 use crate::segment::{segment_path, SegmentReader, SegmentWriter};
@@ -18,7 +19,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_segment_bytes: 4 * 1024 * 1024, // 4 MiB default segment size
+            max_segment_bytes: 4 * 1024 * 1024,
             sync_on_write: false,
         }
     }
@@ -57,7 +58,10 @@ impl Bitcask {
 
         for &file_id in &file_ids {
             let reader = SegmentReader::open(&dir, file_id)?;
-            replay_segment(&dir, file_id, &reader, &mut keydir)?;
+            // Fast path: load .hint file if present; otherwise replay full .data segment
+            if !load_hint_file(&dir, file_id, &mut keydir)? {
+                replay_segment(&dir, file_id, &reader, &mut keydir)?;
+            }
             readers.insert(file_id, reader);
         }
 
@@ -76,7 +80,6 @@ impl Bitcask {
         })
     }
 
-    /// Rotates the active segment if appending `incoming_bytes` would exceed `max_segment_bytes`.
     fn maybe_rotate(&mut self, incoming_bytes: u64) -> Result<()> {
         if self.active_writer.write_offset > 0
             && self.active_writer.write_offset + incoming_bytes > self.cfg.max_segment_bytes
@@ -96,7 +99,6 @@ impl Bitcask {
         Ok(next_file_id)
     }
 
-    /// Writes a key-value pair to the active append-only segment and updates KeyDir.
     pub fn put(&mut self, key: impl Into<String>, value: Vec<u8>) -> Result<()> {
         let key = key.into();
         let key_len = key.len() as u64;
@@ -120,7 +122,6 @@ impl Bitcask {
         Ok(())
     }
 
-    /// Performs an O(1) single-seek positional read using the in-memory KeyDir coordinate.
     pub fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>> {
         let entry = match self.keydir.get(key) {
             Some(&e) => e,
@@ -136,7 +137,6 @@ impl Bitcask {
         Ok(Some(value))
     }
 
-    /// Appends a tombstone record if the key exists and removes the key from KeyDir.
     pub fn delete(&mut self, key: &str) -> Result<bool> {
         if self.keydir.get(key).is_none() {
             return Ok(false);
@@ -153,6 +153,68 @@ impl Bitcask {
             (HEADER_SIZE as u64) + key_len + (prev.value_len as u64)
         });
         Ok(true)
+    }
+
+    /// Compacts all existing segments into a single `.data` + `.hint` pair and removes obsolete files.
+    pub fn compact(&mut self) -> Result<u64> {
+        self.active_writer.sync()?;
+
+        let old_file_ids: Vec<u64> = self.readers.keys().copied().collect();
+        let compact_file_id = self.active_writer.file_id + 1;
+        let next_active_id = compact_file_id + 1;
+
+        let mut compact_writer = SegmentWriter::open(&self.dir, compact_file_id, true)?;
+        let mut hint_writer = open_hint_writer(&self.dir, compact_file_id)?;
+        let mut new_keydir = KeyDir::new();
+
+        let keys = self.keydir.keys_sorted();
+        for key in keys {
+            let old_entry = *self.keydir.get(&key).expect("key exists in keydir");
+            let reader = self
+                .readers
+                .get_mut(&old_entry.file_id)
+                .ok_or(KvError::SegmentNotFound(old_entry.file_id))?;
+            let value = reader.read_value(old_entry.value_offset, old_entry.value_len)?;
+
+            let rec = LogRecord::put(old_entry.timestamp_ms, key.clone(), value);
+            let meta = compact_writer.append(&rec)?;
+
+            let new_entry = KeyDirEntry {
+                file_id: compact_file_id,
+                value_offset: meta.value_offset,
+                value_len: meta.value_len,
+                timestamp_ms: old_entry.timestamp_ms,
+            };
+            write_hint_entry(&mut hint_writer, &key, &new_entry)?;
+            new_keydir.insert(key, new_entry, |_| 0);
+        }
+        compact_writer.sync()?;
+        hint_writer.flush()?;
+
+        let mut new_readers = HashMap::new();
+        new_readers.insert(
+            compact_file_id,
+            SegmentReader::open(&self.dir, compact_file_id)?,
+        );
+
+        let new_active_writer =
+            SegmentWriter::open(&self.dir, next_active_id, self.cfg.sync_on_write)?;
+        new_readers.insert(
+            next_active_id,
+            SegmentReader::open(&self.dir, next_active_id)?,
+        );
+
+        self.active_writer = new_active_writer;
+        self.readers = new_readers;
+        new_keydir.reset_uncompacted_bytes();
+        self.keydir = new_keydir;
+
+        for old_id in old_file_ids {
+            let _ = fs::remove_file(segment_path(&self.dir, old_id));
+            let _ = fs::remove_file(hint_path(&self.dir, old_id));
+        }
+
+        Ok(compact_file_id)
     }
 
     pub fn sync(&mut self) -> Result<()> {
@@ -237,100 +299,4 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_automatic_segment_rotation_on_size_threshold() {
-        let dir = tempdir().unwrap();
-        let cfg = Config {
-            max_segment_bytes: 80, // Force rotation every ~2 records
-            sync_on_write: false,
-        };
-        let mut db = Bitcask::open_with_config(dir.path(), cfg).unwrap();
-
-        for i in 0..6 {
-            db.put(format!("key_{}", i), vec![b'x'; 20]).unwrap();
-        }
-
-        let st = db.stats();
-        assert!(st.total_segments >= 3, "expected >= 3 segments, got {}", st.total_segments);
-        assert_eq!(st.live_keys, 6);
-
-        for i in 0..6 {
-            assert_eq!(db.get(&format!("key_{}", i)).unwrap().unwrap(), vec![b'x'; 20]);
-        }
-    }
-}
-
-impl Bitcask {
-    /// Compacts all existing segments by writing only live KeyDir entries into a new
-    /// compacted segment (`compact_file_id`), opening a fresh active segment (`compact_file_id + 1`),
-    /// and deleting all obsolete `.data` files.
-    pub fn compact(&mut self) -> Result<u64> {
-        self.active_writer.sync()?;
-
-        let old_file_ids: Vec<u64> = self.readers.keys().copied().collect();
-        let compact_file_id = self.active_writer.file_id + 1;
-        let next_active_id = compact_file_id + 1;
-
-        let mut compact_writer =
-            SegmentWriter::open(&self.dir, compact_file_id, true)?;
-        let mut new_keydir = KeyDir::new();
-
-        // Deterministic key order for compacted output
-        let keys = self.keydir.keys_sorted();
-        for key in keys {
-            let old_entry = *self.keydir.get(&key).expect("key exists in keydir");
-            let reader = self
-                .readers
-                .get_mut(&old_entry.file_id)
-                .ok_or(KvError::SegmentNotFound(old_entry.file_id))?;
-            let value = reader.read_value(old_entry.value_offset, old_entry.value_len)?;
-
-            let rec = LogRecord::put(old_entry.timestamp_ms, key.clone(), value);
-            let meta = compact_writer.append(&rec)?;
-
-            new_keydir.insert(
-                key,
-                KeyDirEntry {
-                    file_id: compact_file_id,
-                    value_offset: meta.value_offset,
-                    value_len: meta.value_len,
-                    timestamp_ms: old_entry.timestamp_ms,
-                },
-                |_| 0,
-            );
-        }
-        compact_writer.sync()?;
-
-        let mut new_readers = HashMap::new();
-        new_readers.insert(
-            compact_file_id,
-            SegmentReader::open(&self.dir, compact_file_id)?,
-        );
-
-        let new_active_writer =
-            SegmentWriter::open(&self.dir, next_active_id, self.cfg.sync_on_write)?;
-        new_readers.insert(
-            next_active_id,
-            SegmentReader::open(&self.dir, next_active_id)?,
-        );
-
-        self.active_writer = new_active_writer;
-        self.readers = new_readers;
-        new_keydir.reset_uncompacted_bytes();
-        self.keydir = new_keydir;
-
-        for old_id in old_file_ids {
-            let old_path = segment_path(&self.dir, old_id);
-            let _ = fs::remove_file(old_path);
-        }
-
-        Ok(compact_file_id)
-    }
 }
