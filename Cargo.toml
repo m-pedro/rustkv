@@ -10,3 +10,7 @@ crc32fast = "1.4"
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"
+
+[[bench]]
+name = "kv_bench"
+harness = false
