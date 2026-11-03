@@ -31,7 +31,7 @@ fn test_crash_recovery_heals_torn_write_at_tail() {
     );
 
     // Reopening must detect UnexpectedEof at `valid_size`, truncate the torn tail, and recover both keys
-    let mut db = Bitcask::open(dir.path()).unwrap();
+    let db = Bitcask::open(dir.path()).unwrap();
     assert_eq!(db.get("user:100").unwrap().unwrap(), b"alice");
     assert_eq!(db.get("user:200").unwrap().unwrap(), b"bob");
     assert_eq!(std::fs::metadata(&seg_path).unwrap().len(), valid_size);

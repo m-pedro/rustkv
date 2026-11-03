@@ -5,6 +5,8 @@ pub mod hint;
 pub mod keydir;
 pub mod record;
 pub mod segment;
+pub mod sync;
 
 pub use engine::{Bitcask, Config, EngineStats};
 pub use error::{KvError, Result};
+pub use sync::SharedKvStore;

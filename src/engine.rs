@@ -122,7 +122,7 @@ impl Bitcask {
         Ok(())
     }
 
-    pub fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let entry = match self.keydir.get(key) {
             Some(&e) => e,
             None => return Ok(None),
@@ -130,7 +130,7 @@ impl Bitcask {
 
         let reader = self
             .readers
-            .get_mut(&entry.file_id)
+            .get(&entry.file_id)
             .ok_or(KvError::SegmentNotFound(entry.file_id))?;
 
         let value = reader.read_value(entry.value_offset, entry.value_len)?;

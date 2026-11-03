@@ -60,7 +60,7 @@ fn test_compaction_reclaims_stale_versions_and_generates_hint_file() {
 
     // Reopen from disk (will boot via the generated .hint file) and verify latest values
     drop(db);
-    let mut reopened = Bitcask::open_with_config(dir.path(), cfg).unwrap();
+    let reopened = Bitcask::open_with_config(dir.path(), cfg).unwrap();
     assert_eq!(reopened.stats().live_keys, 5);
     for k in 0..5 {
         let key = format!("hot_key_{}", k);

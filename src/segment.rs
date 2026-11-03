@@ -87,7 +87,7 @@ impl SegmentReader {
     }
 
     /// Performs an O(1) single-seek positional read of `value_len` bytes directly at `value_offset`.
-    pub fn read_value(&mut self, value_offset: u64, value_len: u32) -> Result<Vec<u8>> {
+    pub fn read_value(&self, value_offset: u64, value_len: u32) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; value_len as usize];
         #[cfg(unix)]
         {
@@ -141,7 +141,7 @@ mod tests {
         let m1 = writer.append(&r1).unwrap();
         let m2 = writer.append(&r2).unwrap();
 
-        let mut reader = SegmentReader::open(dir.path(), 1).unwrap();
+        let reader = SegmentReader::open(dir.path(), 1).unwrap();
         let val2 = reader.read_value(m2.value_offset, m2.value_len).unwrap();
         assert_eq!(val2, b"second_payload_123");
 
