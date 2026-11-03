@@ -266,3 +266,71 @@ mod tests {
         }
     }
 }
+
+impl Bitcask {
+    /// Compacts all existing segments by writing only live KeyDir entries into a new
+    /// compacted segment (`compact_file_id`), opening a fresh active segment (`compact_file_id + 1`),
+    /// and deleting all obsolete `.data` files.
+    pub fn compact(&mut self) -> Result<u64> {
+        self.active_writer.sync()?;
+
+        let old_file_ids: Vec<u64> = self.readers.keys().copied().collect();
+        let compact_file_id = self.active_writer.file_id + 1;
+        let next_active_id = compact_file_id + 1;
+
+        let mut compact_writer =
+            SegmentWriter::open(&self.dir, compact_file_id, true)?;
+        let mut new_keydir = KeyDir::new();
+
+        // Deterministic key order for compacted output
+        let keys = self.keydir.keys_sorted();
+        for key in keys {
+            let old_entry = *self.keydir.get(&key).expect("key exists in keydir");
+            let reader = self
+                .readers
+                .get_mut(&old_entry.file_id)
+                .ok_or(KvError::SegmentNotFound(old_entry.file_id))?;
+            let value = reader.read_value(old_entry.value_offset, old_entry.value_len)?;
+
+            let rec = LogRecord::put(old_entry.timestamp_ms, key.clone(), value);
+            let meta = compact_writer.append(&rec)?;
+
+            new_keydir.insert(
+                key,
+                KeyDirEntry {
+                    file_id: compact_file_id,
+                    value_offset: meta.value_offset,
+                    value_len: meta.value_len,
+                    timestamp_ms: old_entry.timestamp_ms,
+                },
+                |_| 0,
+            );
+        }
+        compact_writer.sync()?;
+
+        let mut new_readers = HashMap::new();
+        new_readers.insert(
+            compact_file_id,
+            SegmentReader::open(&self.dir, compact_file_id)?,
+        );
+
+        let new_active_writer =
+            SegmentWriter::open(&self.dir, next_active_id, self.cfg.sync_on_write)?;
+        new_readers.insert(
+            next_active_id,
+            SegmentReader::open(&self.dir, next_active_id)?,
+        );
+
+        self.active_writer = new_active_writer;
+        self.readers = new_readers;
+        new_keydir.reset_uncompacted_bytes();
+        self.keydir = new_keydir;
+
+        for old_id in old_file_ids {
+            let old_path = segment_path(&self.dir, old_id);
+            let _ = fs::remove_file(old_path);
+        }
+
+        Ok(compact_file_id)
+    }
+}
