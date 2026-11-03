@@ -5,10 +5,10 @@ A persistent, crash-resilient **Bitcask** log-structured key-value storage engin
 ## 15-Day Incremental Engineering Roadmap (Month 2, Days 31–45)
 
 - [x] **Day 31:** Initialize `rustkv` crate, binary frame specification, and 15-day roadmap
-- [ ] **Day 32:** Add unified `KvError` type and IEEE CRC32 frame integrity verifier (`src/error.rs`, `src/crc.rs`)
-- [ ] **Day 33:** Implement 17-byte binary log frame encoder, decoder, and tombstone flags (`src/record.rs`)
-- [ ] **Day 34:** Implement $O(1)$ in-memory `KeyDir` offset index and storage metrics (`src/keydir.rs`)
-- [ ] **Day 35:** Implement append-only WAL segment writer and positional reader (`src/segment.rs`)
+- [x] **Day 32:** Add unified `KvError` type and IEEE CRC32 frame integrity verifier (`src/error.rs`, `src/crc.rs`)
+- [x] **Day 33:** Implement 17-byte binary log frame encoder, decoder, and tombstone flags (`src/record.rs`)
+- [x] **Day 34:** Implement $O(1)$ in-memory `KeyDir` offset index and storage metrics (`src/keydir.rs`)
+- [x] **Day 35:** Implement append-only WAL segment writer and positional reader (`src/segment.rs`)
 - [ ] **Day 36:** Implement Bitcask `open`, `put`, `get`, and tombstone `delete` operations (`src/engine.rs`)
 - [ ] **Day 37:** Add crash-recovery replay, torn-write truncation, and bit-rot tests (`tests/recovery_test.rs`)
 - [ ] **Day 38:** Implement automatic active segment rotation at configurable size threshold
