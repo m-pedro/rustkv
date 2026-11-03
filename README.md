@@ -14,8 +14,8 @@ A persistent, crash-resilient **Bitcask** log-structured key-value storage engin
 - [x] **Day 38:** Implement automatic active segment rotation at configurable size threshold
 - [x] **Day 39:** Implement background log compaction to reclaim dead keys and tombstones
 - [x] **Day 40:** Generate and load binary `.hint` files for instant cold-start recovery (`src/hint.rs`)
-- [ ] **Day 41:** Verify compaction shrinks disk footprint and preserves live keys across restarts
-- [ ] **Day 42:** Build `rustkv` CLI binary supporting `set`, `get`, `rm`, `scan`, `compact`, and `stats`
-- [ ] **Day 43:** Wrap engine in thread-safe `SharedKvStore` with multi-reader concurrency tests
-- [ ] **Day 44:** Add Criterion throughput benchmarks for sequential/random puts and gets
-- [ ] **Day 45:** Complete Bitcask architecture guide, on-disk frame diagram, and GitHub Actions CI
+- [x] **Day 41:** Verify compaction shrinks disk footprint and preserves live keys across restarts
+- [x] **Day 42:** Build `rustkv` CLI binary supporting `set`, `get`, `rm`, `scan`, `compact`, and `stats`
+- [x] **Day 43:** Wrap engine in thread-safe `SharedKvStore` with multi-reader concurrency tests
+- [x] **Day 44:** Add Criterion throughput benchmarks for sequential/random puts and gets
+- [x] **Day 45:** Complete Bitcask architecture guide, on-disk frame diagram, and GitHub Actions CI
