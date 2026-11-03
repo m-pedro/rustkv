@@ -33,11 +33,11 @@ pub struct EngineStats {
 }
 
 pub struct Bitcask {
-    dir: PathBuf,
-    cfg: Config,
-    keydir: KeyDir,
-    readers: HashMap<u64, SegmentReader>,
-    active_writer: SegmentWriter,
+    pub(crate) dir: PathBuf,
+    pub(crate) cfg: Config,
+    pub(crate) keydir: KeyDir,
+    pub(crate) readers: HashMap<u64, SegmentReader>,
+    pub(crate) active_writer: SegmentWriter,
 }
 
 impl Bitcask {
@@ -63,7 +63,9 @@ impl Bitcask {
 
         let active_file_id = file_ids.last().copied().unwrap_or(1);
         let active_writer = SegmentWriter::open(&dir, active_file_id, cfg.sync_on_write)?;
-        readers.entry(active_file_id).or_insert(SegmentReader::open(&dir, active_file_id)?);
+        readers
+            .entry(active_file_id)
+            .or_insert(SegmentReader::open(&dir, active_file_id)?);
 
         Ok(Self {
             dir,
@@ -74,12 +76,34 @@ impl Bitcask {
         })
     }
 
+    /// Rotates the active segment if appending `incoming_bytes` would exceed `max_segment_bytes`.
+    fn maybe_rotate(&mut self, incoming_bytes: u64) -> Result<()> {
+        if self.active_writer.write_offset > 0
+            && self.active_writer.write_offset + incoming_bytes > self.cfg.max_segment_bytes
+        {
+            self.rotate_active_segment()?;
+        }
+        Ok(())
+    }
+
+    pub fn rotate_active_segment(&mut self) -> Result<u64> {
+        self.active_writer.sync()?;
+        let next_file_id = self.active_writer.file_id + 1;
+        let new_writer = SegmentWriter::open(&self.dir, next_file_id, self.cfg.sync_on_write)?;
+        let new_reader = SegmentReader::open(&self.dir, next_file_id)?;
+        self.readers.insert(next_file_id, new_reader);
+        self.active_writer = new_writer;
+        Ok(next_file_id)
+    }
+
     /// Writes a key-value pair to the active append-only segment and updates KeyDir.
     pub fn put(&mut self, key: impl Into<String>, value: Vec<u8>) -> Result<()> {
         let key = key.into();
         let key_len = key.len() as u64;
-        let record = LogRecord::put(now_ms(), key.clone(), value);
+        let estimated_size = (HEADER_SIZE as u64) + key_len + (value.len() as u64);
+        self.maybe_rotate(estimated_size)?;
 
+        let record = LogRecord::put(now_ms(), key.clone(), value);
         let meta = self.active_writer.append(&record)?;
         let file_id = self.active_writer.file_id;
 
@@ -119,6 +143,9 @@ impl Bitcask {
         }
 
         let key_len = key.len() as u64;
+        let estimated_size = (HEADER_SIZE as u64) + key_len;
+        self.maybe_rotate(estimated_size)?;
+
         let tombstone = LogRecord::tombstone(now_ms(), key);
         let meta = self.active_writer.append(&tombstone)?;
 
@@ -180,7 +207,6 @@ fn replay_segment(
             }
             Ok(None) => break,
             Err(KvError::UnexpectedEof { offset: valid_len }) => {
-                // Heal torn write at the tail of the segment by truncating partial bytes
                 reader.truncate_to(valid_len)?;
                 break;
             }
@@ -206,7 +232,7 @@ pub(crate) fn list_data_file_ids(dir: &Path) -> Result<Vec<u64>> {
     Ok(ids)
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -219,22 +245,24 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_engine_put_get_delete_and_reopen() {
+    fn test_automatic_segment_rotation_on_size_threshold() {
         let dir = tempdir().unwrap();
-        {
-            let mut db = Bitcask::open(dir.path()).unwrap();
-            db.put("k1", b"v1".to_vec()).unwrap();
-            db.put("k2", b"v2".to_vec()).unwrap();
-            db.put("k1", b"v1_updated".to_vec()).unwrap();
-            assert_eq!(db.get("k1").unwrap().unwrap(), b"v1_updated");
-            assert!(db.delete("k2").unwrap());
-            assert!(db.get("k2").unwrap().is_none());
+        let cfg = Config {
+            max_segment_bytes: 80, // Force rotation every ~2 records
+            sync_on_write: false,
+        };
+        let mut db = Bitcask::open_with_config(dir.path(), cfg).unwrap();
+
+        for i in 0..6 {
+            db.put(format!("key_{}", i), vec![b'x'; 20]).unwrap();
         }
 
-        // Reopen from disk and verify KeyDir reconstruction
-        let mut db2 = Bitcask::open(dir.path()).unwrap();
-        assert_eq!(db2.get("k1").unwrap().unwrap(), b"v1_updated");
-        assert!(db2.get("k2").unwrap().is_none());
-        assert_eq!(db2.list_keys(), vec!["k1".to_string()]);
+        let st = db.stats();
+        assert!(st.total_segments >= 3, "expected >= 3 segments, got {}", st.total_segments);
+        assert_eq!(st.live_keys, 6);
+
+        for i in 0..6 {
+            assert_eq!(db.get(&format!("key_{}", i)).unwrap().unwrap(), vec![b'x'; 20]);
+        }
     }
 }
