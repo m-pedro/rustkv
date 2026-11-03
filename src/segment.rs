@@ -71,14 +71,19 @@ impl SegmentWriter {
 /// Random-access reader for committed `.data` segment files.
 pub struct SegmentReader {
     pub file_id: u64,
+    path: PathBuf,
     file: File,
 }
 
 impl SegmentReader {
     pub fn open(dir: &Path, file_id: u64) -> Result<Self> {
         let path = segment_path(dir, file_id);
-        let file = File::open(path)?;
-        Ok(Self { file_id, file })
+        let file = File::open(&path)?;
+        Ok(Self {
+            file_id,
+            path,
+            file,
+        })
     }
 
     /// Performs an O(1) single-seek positional read of `value_len` bytes directly at `value_offset`.
@@ -113,8 +118,9 @@ impl SegmentReader {
 
     /// Truncates the segment file at `valid_len` to heal a torn write after a power failure.
     pub fn truncate_to(&self, valid_len: u64) -> Result<()> {
-        let path_file = self.file.try_clone()?;
-        path_file.set_len(valid_len)?;
+        let writable = OpenOptions::new().write(true).open(&self.path)?;
+        writable.set_len(valid_len)?;
+        writable.sync_all()?;
         Ok(())
     }
 }
@@ -136,7 +142,6 @@ mod tests {
         let m2 = writer.append(&r2).unwrap();
 
         let mut reader = SegmentReader::open(dir.path(), 1).unwrap();
-        // Read second record's value directly by offset without touching the first record
         let val2 = reader.read_value(m2.value_offset, m2.value_len).unwrap();
         assert_eq!(val2, b"second_payload_123");
 
